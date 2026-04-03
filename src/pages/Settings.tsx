@@ -9,13 +9,14 @@ import { Switch } from '@/components/ui/switch';
 import { ArrowLeft } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useCompany } from '@/contexts/CompanyContext';
+import { getCompanyTaxType, isCompanyTaxEnabled } from '@/lib/companyTax';
 
 const Settings = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const returnTo = location.state?.returnTo;
   const { toast } = useToast();
-  const { selectedCompany } = useCompany();
+  const { selectedCompany, updateSelectedCompany } = useCompany();
   const [loading, setLoading] = useState(false);
   const [settings, setSettings] = useState<any>({});
   
@@ -39,9 +40,9 @@ const Settings = () => {
     print_after_save: 'false',
     email_invoice: 'false'
   };
-  const taxLabel = selectedCompany?.tax_type === 'GST' ? 'GST' : 
-                   selectedCompany?.tax_type === 'VAT' ? 'VAT' : 
-                   'Tax Amount';
+  const companyTaxType = getCompanyTaxType(selectedCompany);
+  const taxLabel = companyTaxType === 'GST' ? 'GST' : companyTaxType === 'VAT' ? 'VAT' : 'Tax';
+  const taxApplicableKey = companyTaxType === 'VAT' ? 'vat_applicable' : 'gst_applicable';
 
   useEffect(() => {
     if (selectedCompany) {
@@ -86,8 +87,29 @@ const Settings = () => {
       });
       
       if (!resp.ok) throw new Error('Failed to update setting');
-      
-      setSettings((prev: any) => ({ ...prev, [key]: value }));
+
+      setSettings((prev: any) => {
+        const next = { ...prev, [key]: value };
+        // Keep both flags aligned so all screens see the same tax on/off state.
+        if (key === 'gst_applicable' || key === 'vat_applicable' || key === 'enable_tax') {
+          next.gst_applicable = value;
+          next.vat_applicable = value;
+          next.enable_tax = value;
+        }
+        return next;
+      });
+
+      // Immediately sync selected company settings in context so masters/vouchers react without re-login.
+      const mergedSettings = {
+        ...(selectedCompany.settings || {}),
+        [key]: value,
+      } as Record<string, string>;
+      if (key === 'gst_applicable' || key === 'vat_applicable' || key === 'enable_tax') {
+        mergedSettings.gst_applicable = value;
+        mergedSettings.vat_applicable = value;
+        mergedSettings.enable_tax = value;
+      }
+      updateSelectedCompany({ settings: mergedSettings as any });
     } catch (error) {
       console.error('Error updating setting:', error);
       toast({
@@ -120,6 +142,14 @@ const Settings = () => {
       });
 
       if (!resp.ok) throw new Error('Failed to save settings');
+
+      // Sync selected company settings in context after batch save.
+      updateSelectedCompany({
+        settings: {
+          ...(selectedCompany.settings || {}),
+          ...settings,
+        } as any,
+      });
       
       toast({
         title: "Success",
@@ -225,8 +255,8 @@ const Settings = () => {
                     <p className="text-sm text-muted-foreground">Enable {taxLabel} calculations</p>
                   </div>
                   <Switch 
-                    checked={settings.gst_applicable === 'true'}
-                    onCheckedChange={(checked) => updateSetting('gst_applicable', checked.toString())}
+                    checked={isCompanyTaxEnabled({ ...selectedCompany, settings })}
+                    onCheckedChange={(checked) => updateSetting(taxApplicableKey, checked.toString())}
                   />
                 </div>
                 

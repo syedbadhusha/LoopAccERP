@@ -12,6 +12,7 @@ import { BatchSelectionDialog } from '@/components/BatchSelectionDialog';
 import { BatchAllocationDialog } from '@/components/BatchAllocationDialog';
 import { useToast } from '@/hooks/use-toast';
 import { useCompany } from '@/contexts/CompanyContext';
+import { getCompanyTaxLabel, getCompanyTaxType, isCompanyTaxEnabled } from '@/lib/companyTax';
 
 interface PurchaseItem {
   id: string;
@@ -53,12 +54,12 @@ const PurchaseForm = ({ voucherType = 'purchase' }: PurchaseFormProps) => {
   const returnTo = location.state?.returnTo;
   const { toast } = useToast();
   const { selectedCompany } = useCompany();
+  const isTaxEnabled = isCompanyTaxEnabled(selectedCompany);
+  const companyTaxType = getCompanyTaxType(selectedCompany);
   const [loading, setLoading] = useState(false);
   
   // Dynamic tax label based on company tax type
-  const taxLabel = selectedCompany?.tax_type === 'GST' ? 'GST Amount' : 
-                   selectedCompany?.tax_type === 'VAT' ? 'VAT Amount' : 
-                   'Tax Amount';
+  const taxLabel = getCompanyTaxLabel(selectedCompany);
   const [ledgers, setLedgers] = useState<any[]>([]);
   const [ledgersState, setLedgersState] = useState<any[]>([]);
   const [items, setItems] = useState<any[]>([]);
@@ -379,14 +380,25 @@ const PurchaseForm = ({ voucherType = 'purchase' }: PurchaseFormProps) => {
     const amount = item.quantity * item.rate;
     const discountAmount = (amount * item.discount_percent) / 100;
     const discountedAmount = amount - discountAmount;
+
+    if (!isTaxEnabled) {
+      return {
+        ...item,
+        amount,
+        discount_amount: discountAmount,
+        tax_percent: 0,
+        tax_amount: 0,
+        net_amount: discountedAmount,
+      };
+    }
     
     // Determine which tax rate to use based on item data
     let applicableTaxRate = item.tax_percent || 0;
-    const companyTaxType = getCompanyTaxType();
+    const selectedTaxType = companyTaxType;
     
     if (item.itemData) {
       // For GST company: use IGST if IGST rate is available, else use CGST+SGST
-      if (companyTaxType === 'GST') {
+      if (selectedTaxType === 'GST') {
         if (item.itemData.igst_rate && item.itemData.igst_rate > 0) {
           applicableTaxRate = item.itemData.igst_rate;
         } else if (item.itemData.cgst_rate && item.itemData.sgst_rate) {
@@ -405,14 +417,14 @@ const PurchaseForm = ({ voucherType = 'purchase' }: PurchaseFormProps) => {
     return { ...item, amount, discount_amount: discountAmount, tax_percent: applicableTaxRate, tax_amount, net_amount };
   };
 
-  const getCompanyTaxType = () => {
-    return selectedCompany?.tax_type || 'GST';
-  };
-
   const calculateTaxByType = (itemsToCalculate: PurchaseItem[], taxType: string) => {
+    if (!isTaxEnabled) {
+      return 0;
+    }
+
     // Calculate tax amount based on specific item master rates for each tax type
     let totalTax = 0;
-    const companyTaxType = getCompanyTaxType();
+    const selectedTaxType = companyTaxType;
     
     itemsToCalculate.forEach((item, index) => {
       // Skip empty items
@@ -443,8 +455,8 @@ const PurchaseForm = ({ voucherType = 'purchase' }: PurchaseFormProps) => {
       // Use specific tax rates; fallback to effective tax_percent when itemData is absent.
       const fallbackRate = Number(item.tax_percent || 0);
       const resolvedRateByType = {
-        CGST: itemTaxData?.cgst_rate || (companyTaxType === 'GST' ? fallbackRate / 2 : 0),
-        SGST: itemTaxData?.sgst_rate || (companyTaxType === 'GST' ? fallbackRate / 2 : 0),
+        CGST: itemTaxData?.cgst_rate || (selectedTaxType === 'GST' ? fallbackRate / 2 : 0),
+        SGST: itemTaxData?.sgst_rate || (selectedTaxType === 'GST' ? fallbackRate / 2 : 0),
         IGST: itemTaxData?.igst_rate || fallbackRate,
         VAT: itemTaxData?.tax_rate || fallbackRate,
       } as const;
@@ -533,23 +545,28 @@ const PurchaseForm = ({ voucherType = 'purchase' }: PurchaseFormProps) => {
   };
 
   const calculateTotals = (items: PurchaseItem[], ledgers: AdditionalLedgerEntry[] = additionalLedgers) => {
-    // Sub Total = items amount without tax
-    const items_subtotal = items.reduce((sum, item) => sum + item.amount, 0);
-    const items_tax = items.reduce((sum, item) => sum + item.tax_amount, 0);
+    // Sub Total = discounted item amount (without tax)
+    const items_subtotal = items.reduce(
+      (sum, item) => sum + (Number(item.amount || 0) - Number(item.discount_amount || 0)),
+      0
+    );
     
     // Tax Amount = sum of Duties & Taxes ledgers with tax types (IGST, CGST, SGST, VAT)
-    const taxLedgerAmount = ledgers.reduce((sum, entry) => {
+    const taxLedgerAmount = isTaxEnabled ? ledgers.reduce((sum, entry) => {
       const ledger = ledgersState.find(l => l.id === entry.ledger_id);
       const isDutiesAndTaxes = ledger?.group_name === 'Duties & Taxes';
       const hasTaxType = ledger?.tax_type && ['IGST', 'CGST', 'SGST', 'VAT'].includes(ledger.tax_type);
       return isDutiesAndTaxes && hasTaxType ? sum + entry.amount : sum;
-    }, 0);
+    }, 0) : 0;
     
     // Other ledger entries (not Duties & Taxes with tax type)
     const otherLedgersTotal = ledgers.reduce((sum, entry) => {
       const ledger = ledgersState.find(l => l.id === entry.ledger_id);
       const isDutiesAndTaxes = ledger?.group_name === 'Duties & Taxes';
       const hasTaxType = ledger?.tax_type && ['IGST', 'CGST', 'SGST', 'VAT'].includes(ledger.tax_type);
+      if (!isTaxEnabled) {
+        return sum + entry.amount;
+      }
       return isDutiesAndTaxes && hasTaxType ? sum : sum + entry.amount;
     }, 0);
     
@@ -709,7 +726,7 @@ const PurchaseForm = ({ voucherType = 'purchase' }: PurchaseFormProps) => {
     const taxType = selectedLedger?.tax_type;
     
     // Get appropriate tax amount based on ledger tax type using item master rates
-    const isValidTaxLedger = isDutiesAndTaxes && hasTaxType;
+    const isValidTaxLedger = isTaxEnabled && isDutiesAndTaxes && hasTaxType;
     const taxAmount = isValidTaxLedger ? calculateTaxByType(purchaseItems, taxType) : 0;
     
     const newLedgers = additionalLedgers.map(entry => {
@@ -737,6 +754,10 @@ const PurchaseForm = ({ voucherType = 'purchase' }: PurchaseFormProps) => {
       const isDutiesAndTaxes = ledger?.group_name === 'Duties & Taxes';
       const hasTaxType = ledger?.tax_type && ['IGST', 'CGST', 'SGST', 'VAT'].includes(ledger.tax_type);
       const taxType = ledger?.tax_type;
+
+      if (!isTaxEnabled && isDutiesAndTaxes && hasTaxType && entry.isAutoCalculated !== false) {
+        return { ...entry, amount: 0, isAutoCalculated: true };
+      }
       
       // Only update if it's a tax ledger AND it was auto-calculated (not manually edited)
       if (isDutiesAndTaxes && hasTaxType && entry.isAutoCalculated !== false) {
@@ -803,8 +824,11 @@ const PurchaseForm = ({ voucherType = 'purchase' }: PurchaseFormProps) => {
     setLoading(true);
 
     try {
-      // Calculate items subtotal (sum of all item amounts)
-      const itemsSubtotal = purchaseItems.reduce((sum, item) => sum + item.amount, 0);
+      // Calculate items subtotal (discounted item base, without tax)
+      const itemsSubtotal = purchaseItems.reduce(
+        (sum, item) => sum + (Number(item.amount || 0) - Number(item.discount_amount || 0)),
+        0
+      );
       
       // Create ledger entries for double-entry bookkeeping
       // Purchase:    Credit Supplier,  Debit Purchase/Tax  (normal)
@@ -1359,21 +1383,35 @@ const PurchaseForm = ({ voucherType = 'purchase' }: PurchaseFormProps) => {
                 
                 <div>
                   <Label>Purchase Ledger *</Label>
-                  <SearchableDropdown
-                    value={selectedPurchaseLedgerId}
-                    onValueChange={setSelectedPurchaseLedgerId}
-                    placeholder="Select Purchase Ledger"
-                    options={ledgers
-                      .filter(
-                        (ledger) =>
-                          ledger.ledger_groups?.name === 'Purchase Accounts' ||
-                          ledger.ledger_groups?.name === 'Expenses'
-                      )
-                      .map((ledger) => ({
-                        value: ledger.id,
-                        label: ledger.name,
-                      }))}
-                  />
+                  <div className="flex gap-2">
+                    <SearchableDropdown
+                      value={selectedPurchaseLedgerId}
+                      onValueChange={setSelectedPurchaseLedgerId}
+                      placeholder="Select Purchase Ledger"
+                      options={ledgers
+                        .filter(
+                          (ledger) =>
+                            ledger.ledger_groups?.name === 'Purchase Accounts' ||
+                            ledger.ledger_groups?.name === 'Expenses'
+                        )
+                        .map((ledger) => ({
+                          value: ledger.id,
+                          label: ledger.name,
+                        }))}
+                    />
+                    <Button type="button" variant="outline" size="sm" onClick={() => {
+                      const returnPath = window.location.pathname + window.location.search;
+                      navigate('/ledger-master', {
+                        state: {
+                          returnTo: returnPath,
+                          action: 'create',
+                          type: 'ledger'
+                        }
+                      });
+                    }}>
+                      <Plus className="h-4 w-4" />
+                    </Button>
+                  </div>
                 </div>
                 
                 <div>
@@ -1549,26 +1587,34 @@ const PurchaseForm = ({ voucherType = 'purchase' }: PurchaseFormProps) => {
                         <Input value={item.amount.toFixed(2)} readOnly className="bg-muted" />
                       </div>
 
-                      <div>
-                        <Label>Tax %</Label>
-                        <Input
-                          type="number"
-                          value={item.tax_percent}
-                          onChange={(e) => updatePurchaseItem(index, 'tax_percent', parseFloat(e.target.value) || 0)}
-                          min="0"
-                          step="0.01"
-                        />
-                      </div>
+                      {/* Tax % - Only show when tax is enabled */}
+                      {isTaxEnabled && (
+                        <div>
+                          <Label>Tax %</Label>
+                          <Input
+                            type="number"
+                            value={item.tax_percent}
+                            onChange={(e) => updatePurchaseItem(index, 'tax_percent', parseFloat(e.target.value) || 0)}
+                            min="0"
+                            step="0.01"
+                          />
+                        </div>
+                      )}
 
-                      <div>
-                        <Label>Tax Amt</Label>
-                        <Input value={item.tax_amount.toFixed(2)} readOnly className="bg-muted" />
-                      </div>
+                      {/* Tax Amount - Only show when tax is enabled */}
+                      {isTaxEnabled && (
+                        <div>
+                          <Label>Tax Amt</Label>
+                          <Input value={item.tax_amount.toFixed(2)} readOnly className="bg-muted" />
+                        </div>
+                      )}
 
-                      <div>
-                        <Label>Net Amt</Label>
-                        <Input value={item.net_amount.toFixed(2)} readOnly className="bg-muted" />
-                      </div>
+                      {isTaxEnabled && (
+                        <div>
+                          <Label>Net Amt</Label>
+                          <Input value={item.net_amount.toFixed(2)} readOnly className="bg-muted" />
+                        </div>
+                      )}
 
                       <div className="flex items-end justify-center gap-1">
                         <Button
@@ -1625,15 +1671,29 @@ const PurchaseForm = ({ voucherType = 'purchase' }: PurchaseFormProps) => {
                     <div key={entry.id} className="flex gap-4 items-end">
                       <div className="flex-1">
                         <Label>Ledger</Label>
-                        <SearchableDropdown
-                          value={entry.ledger_id}
-                          onValueChange={(value) => handleAdditionalLedgerChange(entry.id, value)}
-                          placeholder="Select Ledger"
-                          options={ledgers.map((ledger) => ({
-                            value: ledger.id,
-                            label: `${ledger.name} (${ledger.group_name})`,
-                          }))}
-                        />
+                        <div className="flex gap-2">
+                          <SearchableDropdown
+                            value={entry.ledger_id}
+                            onValueChange={(value) => handleAdditionalLedgerChange(entry.id, value)}
+                            placeholder="Select Ledger"
+                            options={ledgers.map((ledger) => ({
+                              value: ledger.id,
+                              label: `${ledger.name} (${ledger.group_name})`,
+                            }))}
+                          />
+                          <Button type="button" variant="outline" size="sm" onClick={() => {
+                            const returnPath = window.location.pathname + window.location.search;
+                            navigate('/ledger-master', {
+                              state: {
+                                returnTo: returnPath,
+                                action: 'create',
+                                type: 'ledger'
+                              }
+                            });
+                          }}>
+                            <Plus className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </div>
                       <div className="w-48">
                         <Label>Amount</Label>

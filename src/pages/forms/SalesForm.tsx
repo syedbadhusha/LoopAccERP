@@ -10,6 +10,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { ArrowLeft, Plus, Trash2, Printer, Package } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useCompany } from '@/contexts/CompanyContext';
+import { getCompanyTaxLabel, getCompanyTaxType, isCompanyTaxEnabled } from '@/lib/companyTax';
 import { BatchSelectionDialog } from '@/components/BatchSelectionDialog';
 import { BatchAllocationDialog } from '@/components/BatchAllocationDialog';
 
@@ -52,14 +53,14 @@ const SalesForm = ({ voucherType = 'sales' }: SalesFormProps) => {
   const returnTo = location.state?.returnTo;
   const { toast } = useToast();
   const { selectedCompany } = useCompany();
+  const isTaxEnabled = isCompanyTaxEnabled(selectedCompany);
+  const companyTaxType = getCompanyTaxType(selectedCompany);
   const [loading, setLoading] = useState(false);
   
   // Determine actual voucher type (from prop or fallback)
   const actualVoucherType = voucherType || 'sales';
-  // Dynamic tax label based on company tax type
-  const taxLabel = selectedCompany?.tax_type === 'GST' ? 'GST Amount' : 
-                   selectedCompany?.tax_type === 'VAT' ? 'VAT Amount' : 
-                   'Tax Amount';
+  // Dynamic tax label based on company tax type and tax enabled status
+  const taxLabel = isTaxEnabled ? getCompanyTaxLabel(selectedCompany) : 'Tax Amount';
   const [ledgers, setLedgers] = useState<any[]>([]);
   const [ledgersState, setLedgersState] = useState<any[]>([]);
   const [items, setItems] = useState<any[]>([]);
@@ -400,14 +401,25 @@ const SalesForm = ({ voucherType = 'sales' }: SalesFormProps) => {
     const amount = item.quantity * item.rate;
     const discountAmount = (amount * item.discount_percent) / 100;
     const discountedAmount = amount - discountAmount;
+
+    if (!isTaxEnabled) {
+      return {
+        ...item,
+        amount,
+        discount_amount: discountAmount,
+        tax_percent: 0,
+        tax_amount: 0,
+        net_amount: discountedAmount,
+      };
+    }
     
     // Determine which tax rate to use based on item data
     let applicableTaxRate = item.tax_percent || 0;
-    const companyTaxType = getCompanyTaxType();
+    const selectedTaxType = companyTaxType;
     
     if (item.itemData) {
       // For GST company: use IGST if IGST rate is available, else use CGST+SGST
-      if (companyTaxType === 'GST') {
+      if (selectedTaxType === 'GST') {
         if (item.itemData.igst_rate && item.itemData.igst_rate > 0) {
           applicableTaxRate = item.itemData.igst_rate;
         } else if (item.itemData.cgst_rate && item.itemData.sgst_rate) {
@@ -426,14 +438,14 @@ const SalesForm = ({ voucherType = 'sales' }: SalesFormProps) => {
     return { ...item, amount, discount_amount: discountAmount, tax_percent: applicableTaxRate, tax_amount, net_amount };
   };
 
-  const getCompanyTaxType = () => {
-    return selectedCompany?.tax_type || 'GST';
-  };
-
   const calculateTaxByType = (itemsToCalculate: SalesItem[], taxType: string) => {
+    if (!isTaxEnabled) {
+      return 0;
+    }
+
     // Calculate tax amount based on specific item master rates for each tax type
     let totalTax = 0;
-    const companyTaxType = getCompanyTaxType();
+    const selectedTaxType = companyTaxType;
     
     console.log('=== calculateTaxByType ===');
     console.log('Tax Type:', taxType);
@@ -483,8 +495,8 @@ const SalesForm = ({ voucherType = 'sales' }: SalesFormProps) => {
       // Fallback to item's effective tax_percent when itemData is not available.
       const fallbackRate = Number(item.tax_percent || 0);
       const resolvedRateByType = {
-        CGST: itemTaxData?.cgst_rate || (companyTaxType === 'GST' ? fallbackRate / 2 : 0),
-        SGST: itemTaxData?.sgst_rate || (companyTaxType === 'GST' ? fallbackRate / 2 : 0),
+        CGST: itemTaxData?.cgst_rate || (selectedTaxType === 'GST' ? fallbackRate / 2 : 0),
+        SGST: itemTaxData?.sgst_rate || (selectedTaxType === 'GST' ? fallbackRate / 2 : 0),
         IGST: itemTaxData?.igst_rate || fallbackRate,
         VAT: itemTaxData?.tax_rate || fallbackRate,
       } as const;
@@ -516,10 +528,10 @@ const SalesForm = ({ voucherType = 'sales' }: SalesFormProps) => {
   };
 
   const getItemTaxByType = (itemsTaxTotal: number, taxType: string) => {
-    const companyTaxType = getCompanyTaxType();
+    const selectedTaxType = companyTaxType;
     
     // For GST company with CGST/SGST: split equally
-    if (companyTaxType === 'GST' && (taxType === 'CGST' || taxType === 'SGST')) {
+    if (selectedTaxType === 'GST' && (taxType === 'CGST' || taxType === 'SGST')) {
       return itemsTaxTotal / 2;
     }
     // For IGST (works with both GST and non-GST companies): use full amount
@@ -600,23 +612,28 @@ const SalesForm = ({ voucherType = 'sales' }: SalesFormProps) => {
   };
 
   const calculateTotals = (items: SalesItem[], ledgers: AdditionalLedgerEntry[] = additionalLedgers) => {
-    // Sub Total = items amount without tax
-    const items_subtotal = items.reduce((sum, item) => sum + item.amount, 0);
-    const items_tax = items.reduce((sum, item) => sum + item.tax_amount, 0);
+    // Sub Total = discounted item amount (without tax)
+    const items_subtotal = items.reduce(
+      (sum, item) => sum + (Number(item.amount || 0) - Number(item.discount_amount || 0)),
+      0
+    );
     
     // Tax Amount = sum of Duties & Taxes ledgers with tax types (IGST, CGST, SGST, VAT)
-    const taxLedgerAmount = ledgers.reduce((sum, entry) => {
+    const taxLedgerAmount = isTaxEnabled ? ledgers.reduce((sum, entry) => {
       const ledger = ledgersState.find(l => l.id === entry.ledger_id);
       const isDutiesAndTaxes = ledger?.group_name === 'Duties & Taxes';
       const hasTaxType = ledger?.tax_type && ['IGST', 'CGST', 'SGST', 'VAT'].includes(ledger.tax_type);
       return isDutiesAndTaxes && hasTaxType ? sum + entry.amount : sum;
-    }, 0);
+    }, 0) : 0;
     
     // Other ledger entries (not Duties & Taxes with tax type)
     const otherLedgersTotal = ledgers.reduce((sum, entry) => {
       const ledger = ledgersState.find(l => l.id === entry.ledger_id);
       const isDutiesAndTaxes = ledger?.group_name === 'Duties & Taxes';
       const hasTaxType = ledger?.tax_type && ['IGST', 'CGST', 'SGST', 'VAT'].includes(ledger.tax_type);
+      if (!isTaxEnabled) {
+        return sum + entry.amount;
+      }
       return isDutiesAndTaxes && hasTaxType ? sum : sum + entry.amount;
     }, 0);
     
@@ -785,7 +802,7 @@ const SalesForm = ({ voucherType = 'sales' }: SalesFormProps) => {
     console.log('Sales Items:', salesItems);
     
     // Calculate tax amount using specific item master rates for this tax type
-    const isValidTaxLedger = isDutiesAndTaxes && hasTaxType;
+    const isValidTaxLedger = isTaxEnabled && isDutiesAndTaxes && hasTaxType;
     const taxAmount = isValidTaxLedger ? calculateTaxByType(salesItems, taxType) : 0;
     
     console.log('Calculated Tax Amount:', taxAmount);
@@ -819,6 +836,10 @@ const SalesForm = ({ voucherType = 'sales' }: SalesFormProps) => {
       const isDutiesAndTaxes = ledger?.group_name === 'Duties & Taxes';
       const hasTaxType = ledger?.tax_type && ['IGST', 'CGST', 'SGST', 'VAT'].includes(ledger.tax_type);
       const taxType = ledger?.tax_type;
+
+      if (!isTaxEnabled && isDutiesAndTaxes && hasTaxType && entry.isAutoCalculated !== false) {
+        return { ...entry, amount: 0, isAutoCalculated: true };
+      }
       
       // Only update if it's a tax ledger AND it was auto-calculated (isAutoCalculated is true)
       // Don't update if isAutoCalculated is explicitly false (user edited it)
@@ -888,8 +909,11 @@ const SalesForm = ({ voucherType = 'sales' }: SalesFormProps) => {
     setLoading(true);
 
     try {
-      // Calculate items subtotal (sum of all item amounts)
-      const itemsSubtotal = salesItems.reduce((sum, item) => sum + item.amount, 0);
+      // Calculate items subtotal (discounted item base, without tax)
+      const itemsSubtotal = salesItems.reduce(
+        (sum, item) => sum + (Number(item.amount || 0) - Number(item.discount_amount || 0)),
+        0
+      );
       
       // Create ledger entries for double-entry bookkeeping
       // Sales:        Debit Customer,   Credit Sales/Tax  (normal)
@@ -1435,21 +1459,35 @@ const SalesForm = ({ voucherType = 'sales' }: SalesFormProps) => {
                 
                 <div>
                   <Label>Sales Ledger *</Label>
-                  <SearchableDropdown
-                    value={selectedSalesLedgerId}
-                    onValueChange={setSelectedSalesLedgerId}
-                    placeholder="Select Sales Ledger"
-                    options={ledgers
-                      .filter(
-                        (ledger) =>
-                          ledger.ledger_groups?.name === 'Sales Accounts' ||
-                          ledger.ledger_groups?.name === 'Income'
-                      )
-                      .map((ledger) => ({
-                        value: ledger.id,
-                        label: ledger.name,
-                      }))}
-                  />
+                  <div className="flex gap-2">
+                    <SearchableDropdown
+                      value={selectedSalesLedgerId}
+                      onValueChange={setSelectedSalesLedgerId}
+                      placeholder="Select Sales Ledger"
+                      options={ledgers
+                        .filter(
+                          (ledger) =>
+                            ledger.ledger_groups?.name === 'Sales Accounts' ||
+                            ledger.ledger_groups?.name === 'Income'
+                        )
+                        .map((ledger) => ({
+                          value: ledger.id,
+                          label: ledger.name,
+                        }))}
+                    />
+                    <Button type="button" variant="outline" size="sm" onClick={() => {
+                      const returnPath = window.location.pathname + window.location.search;
+                      navigate('/ledger-master', {
+                        state: {
+                          returnTo: returnPath,
+                          action: 'create',
+                          type: 'ledger'
+                        }
+                      });
+                    }}>
+                      <Plus className="h-4 w-4" />
+                    </Button>
+                  </div>
                 </div>
                 
                 <div>
@@ -1636,26 +1674,34 @@ const SalesForm = ({ voucherType = 'sales' }: SalesFormProps) => {
                         <Input value={item.amount.toFixed(2)} readOnly className="bg-muted" />
                       </div>
 
-                      <div>
-                        <Label>Tax %</Label>
-                        <Input
-                          type="number"
-                          value={item.tax_percent}
-                          onChange={(e) => updateSalesItem(index, 'tax_percent', parseFloat(e.target.value) || 0)}
-                          min="0"
-                          step="0.01"
-                        />
-                      </div>
+                      {/* Tax % - Only show when tax is enabled */}
+                      {isTaxEnabled && (
+                        <div>
+                          <Label>Tax %</Label>
+                          <Input
+                            type="number"
+                            value={item.tax_percent}
+                            onChange={(e) => updateSalesItem(index, 'tax_percent', parseFloat(e.target.value) || 0)}
+                            min="0"
+                            step="0.01"
+                          />
+                        </div>
+                      )}
 
-                      <div>
-                        <Label>Tax Amt</Label>
-                        <Input value={item.tax_amount.toFixed(2)} readOnly className="bg-muted" />
-                      </div>
+                      {/* Tax Amount - Only show when tax is enabled */}
+                      {isTaxEnabled && (
+                        <div>
+                          <Label>{taxLabel}</Label>
+                          <Input value={item.tax_amount.toFixed(2)} readOnly className="bg-muted" />
+                        </div>
+                      )}
 
-                      <div>
-                        <Label>Net Amt</Label>
-                        <Input value={item.net_amount.toFixed(2)} readOnly className="bg-muted" />
-                      </div>
+                      {isTaxEnabled && (
+                        <div>
+                          <Label>Net Amt</Label>
+                          <Input value={item.net_amount.toFixed(2)} readOnly className="bg-muted" />
+                        </div>
+                      )}
 
                       <div className="flex items-end justify-center">
                         <Button
@@ -1702,15 +1748,29 @@ const SalesForm = ({ voucherType = 'sales' }: SalesFormProps) => {
                     <div key={entry.id} className="flex gap-4 items-end">
                       <div className="flex-1">
                         <Label>Ledger</Label>
-                        <SearchableDropdown
-                          value={entry.ledger_id}
-                          onValueChange={(value) => handleAdditionalLedgerChange(entry.id, value)}
-                          placeholder="Select Ledger"
-                          options={ledgers.map((ledger) => ({
-                            value: ledger.id,
-                            label: `${ledger.name} (${ledger.group_name})`,
-                          }))}
-                        />
+                        <div className="flex gap-2">
+                          <SearchableDropdown
+                            value={entry.ledger_id}
+                            onValueChange={(value) => handleAdditionalLedgerChange(entry.id, value)}
+                            placeholder="Select Ledger"
+                            options={ledgers.map((ledger) => ({
+                              value: ledger.id,
+                              label: `${ledger.name} (${ledger.group_name})`,
+                            }))}
+                          />
+                          <Button type="button" variant="outline" size="sm" onClick={() => {
+                            const returnPath = window.location.pathname + window.location.search;
+                            navigate('/ledger-master', {
+                              state: {
+                                returnTo: returnPath,
+                                action: 'create',
+                                type: 'ledger'
+                              }
+                            });
+                          }}>
+                            <Plus className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </div>
                       <div className="w-48">
                         <Label>Amount</Label>

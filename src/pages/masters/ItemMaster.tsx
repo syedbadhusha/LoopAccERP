@@ -9,6 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { ArrowLeft, Plus, Edit, Trash2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useCompany } from '@/contexts/CompanyContext';
+import { getCompanyTaxType, isCompanyTaxEnabled } from '@/lib/companyTax';
 
 const normalizeBatchNumber = (value: unknown): string =>
   String(value || '')
@@ -22,6 +23,8 @@ const ItemMaster = () => {
   const returnTo = location.state?.returnTo;
   const { toast } = useToast();
   const { selectedCompany } = useCompany();
+  const isTaxEnabled = isCompanyTaxEnabled(selectedCompany);
+  const companyTaxType = getCompanyTaxType(selectedCompany);
   const [loading, setLoading] = useState(false);
   const [items, setItems] = useState<any[]>([]);
   const [uoms, setUoms] = useState<any[]>([]);
@@ -217,6 +220,30 @@ const ItemMaster = () => {
     });
   };
 
+  const buildMergedTaxHistory = () => {
+    const currentEntry = {
+      date: formData.tax_effective_date,
+      tax_rate: formData.tax_rate,
+      igst_rate: formData.igst_rate,
+      cgst_rate: formData.cgst_rate,
+      sgst_rate: formData.sgst_rate,
+    };
+
+    const baseHistory = Array.isArray(formData.tax_history)
+      ? [...formData.tax_history]
+      : [];
+
+    const idx = baseHistory.findIndex((h: any) => h.date === currentEntry.date);
+    if (idx >= 0) {
+      baseHistory[idx] = currentEntry;
+    } else {
+      baseHistory.push(currentEntry);
+    }
+
+    baseHistory.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    return baseHistory;
+  };
+
   const removeTaxFromHistory = (date: string) => {
     setFormData(prev => ({
       ...prev,
@@ -326,17 +353,19 @@ const ItemMaster = () => {
         company_id: selectedCompany.id,
         batch_details: batchDetailsToSave
       };
+
+      const mergedTaxHistory = buildMergedTaxHistory();
       
       // Add tax fields based on company tax type
       if (selectedCompany.tax_type === 'GST') {
         dataToSave.igst_rate = formData.igst_rate;
         dataToSave.cgst_rate = formData.cgst_rate;
         dataToSave.sgst_rate = formData.sgst_rate;
-        dataToSave.tax_history = formData.tax_history;
+        dataToSave.tax_history = mergedTaxHistory;
       } else {
         // VAT or other tax types
         dataToSave.tax_rate = formData.tax_rate;
-        dataToSave.tax_history = formData.tax_history;
+        dataToSave.tax_history = mergedTaxHistory;
       }
 
       if (editingItem) {
@@ -622,17 +651,20 @@ const ItemMaster = () => {
                     />
                   </div>
                   
-                  <div>
-                    <Label>HSN Code</Label>
-                    <Input 
-                      value={formData.hsn_code}
-                      onChange={(e) => setFormData({...formData, hsn_code: e.target.value})}
-                      placeholder="Enter HSN code"
-                    />
-                  </div>
+                  {/* HSN Code - Only show when tax is enabled */}
+                  {isTaxEnabled && (
+                    <div>
+                      <Label>HSN Code</Label>
+                      <Input 
+                        value={formData.hsn_code}
+                        onChange={(e) => setFormData({...formData, hsn_code: e.target.value})}
+                        placeholder="Enter HSN code"
+                      />
+                    </div>
+                  )}
                   
-                  {/* Tax Fields - Conditional based on company tax type */}
-                  {selectedCompany?.tax_type === 'GST' ? (
+                  {/* Tax Fields - Conditional based on company tax type and tax enabled */}
+                  {isTaxEnabled && (companyTaxType === 'GST' ? (
                     <div className="md:col-span-3">
                       <Label className="font-medium mb-2 block">GST Rates (%)</Label>
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -687,7 +719,7 @@ const ItemMaster = () => {
                     </div>
                   ) : (
                     <div>
-                      <Label>Tax Rate (%) - {selectedCompany?.tax_type || 'VAT'}</Label>
+                      <Label>Tax Rate (%) - {companyTaxType || 'VAT'}</Label>
                       <Input 
                         type="number"
                         value={formData.tax_rate ?? 0}
@@ -697,42 +729,45 @@ const ItemMaster = () => {
                         placeholder="e.g., 15"
                       />
                     </div>
-                  )}
+                  ))}
 
                   {/* Tax History Management */}
-                  <div className="border-t pt-4 mt-4">
-                    <Label className="font-medium mb-3 block">Tax Effective Date</Label>
-                    <div className="flex gap-2 items-end">
-                      <Input 
-                        type="date"
-                        value={formData.tax_effective_date}
-                        onChange={(e) => setFormData({...formData, tax_effective_date: e.target.value})}
-                        className="flex-1"
-                      />
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={addTaxToHistory}
-                        className="whitespace-nowrap"
-                      >
-                        Add to History
-                      </Button>
-                      {formData.tax_history.length > 0 && (
+                  {isTaxEnabled && (
+                    <div className="border-t pt-4 mt-4">
+                      <Label className="font-medium mb-3 block">Tax Effective Date</Label>
+                      <div className="flex gap-2 items-end">
+                        <Input 
+                          type="date"
+                          value={formData.tax_effective_date}
+                          onChange={(e) => setFormData({...formData, tax_effective_date: e.target.value})}
+                          className="flex-1"
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={addTaxToHistory}
+                          className="whitespace-nowrap"
+                        >
+                          Add to History
+                        </Button>
                         <Button
                           type="button"
                           variant="outline"
                           onClick={() => {
                             setShowTaxHistory(true);
-                            setSelectedItemForHistory({...formData});
+                            setSelectedItemForHistory({
+                              ...formData,
+                              tax_history: buildMergedTaxHistory(),
+                            });
                           }}
                           className="whitespace-nowrap"
                         >
-                          View History ({formData.tax_history.length})
+                          View History ({buildMergedTaxHistory().length})
                         </Button>
-                      )}
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">Set the date when this tax rate became effective, then click "Add to History"</p>
                     </div>
-                    <p className="text-xs text-muted-foreground mt-1">Set the date when this tax rate became effective, then click "Add to History"</p>
-                  </div>
+                  )}
 
                   <div>
                     <Label>Purchase Rate</Label>
@@ -975,7 +1010,7 @@ const ItemMaster = () => {
                       <TableCell>₹{item.sales_rate?.toFixed(2)}</TableCell>
                       <TableCell>
                         <div className="flex space-x-2">
-                          {item.tax_history && item.tax_history.length > 0 && (
+                          {isTaxEnabled && (
                             <Button 
                               variant="outline" 
                               size="sm" 
@@ -1048,7 +1083,7 @@ const ItemMaster = () => {
                           )}
                         </div>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
-                          {selectedCompany?.tax_type === 'GST' ? (
+                          {companyTaxType === 'GST' ? (
                             <>
                               <div>
                                 <span className="text-muted-foreground">IGST:</span>

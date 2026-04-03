@@ -10,6 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { ArrowLeft, Plus, Edit, Trash2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useCompany } from '@/contexts/CompanyContext';
+import { getCompanyTaxType, isCompanyTaxEnabled } from '@/lib/companyTax';
 import BillwiseAllocationDialog from '@/components/BillwiseAllocationDialog';
 
 type BillType = 'ON ACCOUNTS' | 'Against Ref' | 'New Ref' | 'Opening' | 'Advance';
@@ -139,6 +140,8 @@ const LedgerMaster = () => {
   const type = location.state?.type || new URLSearchParams(location.search).get('type');
   const { toast } = useToast();
   const { selectedCompany } = useCompany();
+  const isTaxEnabled = isCompanyTaxEnabled(selectedCompany);
+  const companyTaxType = getCompanyTaxType(selectedCompany);
   const [loading, setLoading] = useState(false);
   const [ledgers, setLedgers] = useState<LedgerRecord[]>([]);
   const [ledgerGroups, setLedgerGroups] = useState<LedgerGroup[]>([]);
@@ -766,31 +769,37 @@ const LedgerMaster = () => {
                     />
                   </div>
                   
-                  <div>
-                    <Label>GSTIN</Label>
-                    <Input 
-                      value={formData.gstin}
-                      onChange={(e) => setFormData({...formData, gstin: e.target.value})}
-                      placeholder="Enter GSTIN"
-                    />
-                  </div>
+                  {/* GSTIN - Only show when tax is enabled */}
+                  {isTaxEnabled && (
+                    <div>
+                      <Label>GSTIN</Label>
+                      <Input 
+                        value={formData.gstin}
+                        onChange={(e) => setFormData({...formData, gstin: e.target.value})}
+                        placeholder="Enter GSTIN"
+                      />
+                    </div>
+                  )}
                   
-                  <div>
-                    <Label>PAN</Label>
-                    <Input 
-                      value={formData.pan}
-                      onChange={(e) => setFormData({...formData, pan: e.target.value})}
-                      placeholder="Enter PAN"
-                    />
-                  </div>
+                  {/* PAN - Only show when tax is enabled */}
+                  {isTaxEnabled && (
+                    <div>
+                      <Label>PAN</Label>
+                      <Input 
+                        value={formData.pan}
+                        onChange={(e) => setFormData({...formData, pan: e.target.value})}
+                        placeholder="Enter PAN"
+                      />
+                    </div>
+                  )}
                   
-                  {/* Tax Type - Only show for Duties & Taxes group */}
-                  {(() => {
+                  {/* Tax Type - Only show for Duties & Taxes group and when tax is enabled */}
+                  {isTaxEnabled && (() => {
                     const selectedGroup = ledgerGroups.find(g => g.id === formData.ledger_group_id);
                     if (selectedGroup?.name === 'Duties & Taxes') {
                       // Get tax types based on company tax type
                       const getTaxTypes = () => {
-                        const taxType = selectedCompany?.tax_type?.toUpperCase() || 'GST';
+                        const taxType = companyTaxType;
                         if (taxType === 'GST') {
                           return ['IGST', 'CGST', 'SGST'];
                         } else if (taxType === 'VAT') {

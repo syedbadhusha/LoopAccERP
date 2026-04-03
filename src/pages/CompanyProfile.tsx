@@ -341,7 +341,6 @@ const CompanyProfile = () => {
                     </div>
                   </div>
                 </div>
-
                 <div className="flex justify-end space-x-4 pt-6">
                   <Button type="button" variant="outline" onClick={() => navigate('/dashboard')}>
                     Cancel
