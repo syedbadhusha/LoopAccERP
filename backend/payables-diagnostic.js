@@ -1,24 +1,16 @@
-import dotenv from "dotenv";
 import { MongoClient } from "mongodb";
-
-dotenv.config();
 
 const COMPANY_ID = "8fefda79-d18a-4d56-92aa-4d604419d29f";
 const COMPANY_NAME = "A To Z Battery sales and Services Test";
-const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/";
-const DB_NAME = "loopacc_db";
-
-const client = new MongoClient(MONGODB_URI);
+const client = new MongoClient("mongodb://localhost:27017/tally");
 
 async function diagnose() {
   try {
     console.log("🔍 PAYABLES DIAGNOSTIC REPORT");
     console.log("=".repeat(60));
-    console.log(`Connecting to: ${DB_NAME} (MongoDB Atlas)`);
-    console.log("=".repeat(60));
 
     await client.connect();
-    const db = client.db(DB_NAME);
+    const db = client.db("tally");
 
     // Step 1: Check companies
     console.log("\n1️⃣  CHECKING COMPANIES");
@@ -61,7 +53,6 @@ async function diagnose() {
         .collection("groups")
         .find({ company_id: COMPANY_ID })
         .toArray();
-      console.log(`Total groups for company: ${allGroups.length}`);
       allGroups.forEach((group) => {
         console.log(`   - ${group.name}`);
       });
@@ -137,21 +128,17 @@ async function diagnose() {
 
     // Show sample bills with details
     console.log(`\n📊 SAMPLE BILL DATA (max 5):`);
-    if (supplierBills.length === 0) {
-      console.log("   (no bills found)");
-    } else {
-      supplierBills.slice(0, 5).forEach((bill, idx) => {
-        const ledger = supplierLedgers.find((l) => l.id === bill.ledger_id);
-        console.log(`\n   [${idx + 1}] Bill Reference: ${bill.bill_reference}`);
-        console.log(`       Ledger: ${ledger?.name}`);
-        console.log(`       Allocated Amount: ${bill.allocated_amount}`);
-        console.log(`       isDeemedPositive: ${bill.isDeemedPositive}`);
-        console.log(`       Source: ${bill.source}`);
-        console.log(`       Remaining Amount: ${bill.remaining_amount}`);
-        console.log(`       Status: ${bill.status}`);
-        console.log(`       Created: ${bill.created_at}`);
-      });
-    }
+    supplierBills.slice(0, 5).forEach((bill, idx) => {
+      const ledger = supplierLedgers.find((l) => l.id === bill.ledger_id);
+      console.log(`\n   [${idx + 1}] Bill Reference: ${bill.bill_reference}`);
+      console.log(`       Ledger: ${ledger?.name}`);
+      console.log(`       Allocated Amount: ${bill.allocated_amount}`);
+      console.log(`       isDeemedPositive: ${bill.isDeemedPositive}`);
+      console.log(`       Source: ${bill.source}`);
+      console.log(`       Remaining Amount: ${bill.remaining_amount}`);
+      console.log(`       Status: ${bill.status}`);
+      console.log(`       Created: ${bill.created_at}`);
+    });
 
     // Step 5: Check for purchase vouchers for billwise ledgers
     console.log("\n5️⃣  CHECKING PURCHASE VOUCHERS FOR BILLWISE LEDGERS");
@@ -266,15 +253,7 @@ async function diagnose() {
     console.log(`✅ Total supplier ledgers: ${supplierLedgers.length}`);
     console.log(`✅ Billwise ledgers: ${billwiseLedgers.length}`);
     console.log(`✅ Bills in bill_allocation: ${supplierBills.length}`);
-    const purchaseVouchersCount =
-      billwiseLedgerIds.length > 0
-        ? await db.collection("vouchers").countDocuments({
-            company_id: COMPANY_ID,
-            voucher_type: "purchase",
-            ledger_id: { $in: billwiseLedgerIds },
-          })
-        : 0;
-    console.log(`✅ Purchase vouchers: ${purchaseVouchersCount}`);
+    console.log(`✅ Purchase vouchers: ${purchaseVouchers?.length || 0}`);
     console.log(`✅ Ledger entries: ${ledgerEntries.length}`);
 
     // Potential issues
@@ -290,7 +269,7 @@ async function diagnose() {
         `   ❌ NO bills in bill_allocation collection for supplier ledgers`
       );
     }
-    if (purchaseVouchersCount === 0 && billwiseLedgers.length > 0) {
+    if ((purchaseVouchers?.length || 0) === 0 && billwiseLedgers.length > 0) {
       console.log(`   ❌ NO purchase vouchers for billwise ledgers`);
     }
 
