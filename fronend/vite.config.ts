@@ -19,54 +19,6 @@ export default defineConfig(({ mode }) => {
       },
     },
     root: path.resolve(__dirname),
-    build: {
-      rollupOptions: {
-        output: {
-          manualChunks(id) {
-            if (!id.includes("node_modules")) {
-              return;
-            }
-
-            if (
-              id.includes("react") ||
-              id.includes("react-dom") ||
-              id.includes("scheduler")
-            ) {
-              return "vendor-react";
-            }
-
-            if (id.includes("react-router")) {
-              return "vendor-router";
-            }
-
-            if (id.includes("@radix-ui")) {
-              return "vendor-radix";
-            }
-
-            if (id.includes("recharts") || id.includes("d3-")) {
-              return "vendor-charts";
-            }
-
-            if (
-              id.includes("react-hook-form") ||
-              id.includes("@hookform") ||
-              id.includes("zod")
-            ) {
-              return "vendor-forms";
-            }
-
-            if (id.includes("@tanstack")) {
-              return "vendor-query";
-            }
-
-            if (id.includes("lucide-react")) {
-              return "vendor-icons";
-            }
-
-            return "vendor-misc";
-          },
-        },
-      },
-    },
+    build: {},
   };
 });
