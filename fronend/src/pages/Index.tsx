@@ -30,7 +30,7 @@ const Index = () => {
         </div>
         <h1 className="text-5xl font-bold mb-4 text-foreground">LoopAcc</h1>
         <p className="text-xl text-muted-foreground mb-8">
-          Complete Accounting Software Solution - Just like Tally
+          Complete Accounting Software Solution
         </p>
         <div className="space-y-4">
           <p className="text-base text-muted-foreground mb-8">
